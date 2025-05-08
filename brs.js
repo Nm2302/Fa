@@ -646,7 +646,7 @@ const errorHandler = error => {
 				  "flood.js",
 				  targetURL,
 				  duration, 
-				  thread,
+				  "1",
 				  response.browserProxy,
 				  rates,
 				  response.cookies,
